@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { gameApi } from './api.js';
+import { hasCapacityOverflow, summarizeCourierLoads } from './utils.js';
 import FleetPanel from './components/FleetPanel.jsx';
 import LetterCard from './components/LetterCard.jsx';
 import MapPanel from './components/MapPanel.jsx';
@@ -80,6 +81,13 @@ function App() {
   const assignedIds = useMemo(() => new Set(assignments.map((assignment) => assignment.letterId)), [assignments]);
   const unassignedLetters = openLetters.filter((letter) => !assignedIds.has(letter.id));
 
+  // 封数/载重是纯派生数据，每次调整后同步复算，不等服务端预览往返。
+  const courierLoads = useMemo(
+    () => (game ? summarizeCourierLoads(game.couriers, assignments, game.letters) : new Map()),
+    [game, assignments]
+  );
+  const capacityOk = useMemo(() => !hasCapacityOverflow(courierLoads), [courierLoads]);
+
   function assignLetter(letter, courierId) {
     setAssignments((current) => {
       const courierOrders = current
@@ -128,7 +136,8 @@ function App() {
   }
 
   async function advanceDay() {
-    if (!preview?.valid) return;
+    // 双重拦截：本地容量即时结果 + 服务端预览结论；服务端结算时还会做最终裁决。
+    if (!capacityOk || !preview?.valid) return;
     setBusy(true);
     setError('');
     try {
@@ -193,6 +202,7 @@ function App() {
 
   const projection = preview?.projection;
   const deliveredCount = assignments.length;
+  const canDispatch = capacityOk && Boolean(preview?.valid);
 
   return (
     <div className="app-shell">
@@ -284,6 +294,7 @@ function App() {
             game={game}
             assignments={assignments}
             preview={preview}
+            loads={courierLoads}
             busy={busy}
             onMove={moveLetter}
             onUnassign={unassignLetter}
@@ -322,11 +333,11 @@ function App() {
           <button
             type="button"
             className="dispatch-button"
-            disabled={busy || !preview?.valid}
+            disabled={busy || !canDispatch}
             onClick={advanceDay}
           >
             {busy ? '航线结算中...' : '执行当日调度'}
-            <span>{preview?.valid ? '所有航线检查通过' : '先修正调度方案'}</span>
+            <span>{canDispatch ? '所有航线检查通过' : '先修正调度方案'}</span>
           </button>
         </div>
       </aside>

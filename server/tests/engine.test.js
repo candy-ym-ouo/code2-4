@@ -44,6 +44,27 @@ test('预览会按信使载重与邮件数量执行校验', () => {
   assert.ok(preview.issues.some((issue) => issue.code === 'LETTER_LIMIT_EXCEEDED'));
 });
 
+test('服务端最终裁决：超重方案在预览与结算两侧均被拦截', () => {
+  const state = createInitialState({ seed: 'weight-limit-check' });
+  const comet = state.couriers.find((courier) => courier.id === 'comet');
+  const [first, second] = state.letters;
+  first.weight = 6.2;
+  second.weight = 6.1;
+  const assignments = [first, second].map((letter, index) => ({
+    ...assignmentFor(state, letter, 'comet'),
+    order: index
+  }));
+
+  const preview = previewPlan(state, assignments);
+  assert.equal(preview.valid, false);
+  assert.ok(preview.issues.some((issue) => (
+    issue.code === 'WEIGHT_LIMIT_EXCEEDED' && issue.courierId === comet.id
+  )));
+  assert.throws(() => advanceDay(state, assignments), /调度方案不合法/);
+  assert.equal(state.day, 1);
+  assert.ok(state.letters.every((letter) => letter.status === 'inbox'));
+});
+
 test('误投会降低发件岛与目的岛之间的关系', () => {
   const state = createInitialState({ seed: 'wrong-delivery' });
   const letter = state.letters[0];

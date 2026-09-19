@@ -1,4 +1,4 @@
-import { formatHour } from '../utils.js';
+import { buildCapacityIssues, formatHour, hasCapacityOverflow } from '../utils.js';
 
 const OUTCOME = {
   'on-time': { label: '准时', className: 'success' },
@@ -50,8 +50,12 @@ function RouteLetter({ entry, index, total, game, routeResult, busy, onChangeTar
   );
 }
 
-export default function FleetPanel({ game, assignments, preview, busy, onMove, onUnassign, onChangeTarget }) {
+export default function FleetPanel({ game, assignments, preview, loads, busy, onMove, onUnassign, onChangeTarget }) {
   const letterMap = new Map(game.letters.map((letter) => [letter.id, letter]));
+  const capacityOverflow = hasCapacityOverflow(loads);
+  // 服务端预览未返回（调整后的间隙）时，先用本地容量复算结果定位超限。
+  const issues = preview ? preview.issues : buildCapacityIssues(game.couriers, loads);
+  const planValid = !capacityOverflow && Boolean(preview?.valid);
 
   return (
     <section className="panel fleet-panel" aria-labelledby="fleet-title">
@@ -60,12 +64,12 @@ export default function FleetPanel({ game, assignments, preview, busy, onMove, o
           <p className="eyebrow">三艘信使艇</p>
           <h2 id="fleet-title">装载与航线</h2>
         </div>
-        {preview?.valid ? <span className="plan-valid">方案合法</span> : <span className="plan-invalid">需要调整</span>}
+        {planValid ? <span className="plan-valid">方案合法</span> : <span className="plan-invalid">需要调整</span>}
       </div>
 
-      {preview?.issues?.length > 0 && (
+      {issues.length > 0 && (
         <div className="validation-issues" role="alert">
-          {preview.issues.map((issue, index) => <p key={`${issue.code}-${index}`}>{issue.message}</p>)}
+          {issues.map((issue, index) => <p key={`${issue.code}-${index}`}>{issue.message}</p>)}
         </div>
       )}
 
@@ -76,12 +80,19 @@ export default function FleetPanel({ game, assignments, preview, busy, onMove, o
             .sort((first, second) => first.order - second.order)
             .map((assignment) => ({ ...assignment, letter: letterMap.get(assignment.letterId) }))
             .filter((assignment) => assignment.letter);
-          const totalWeight = entries.reduce((sum, entry) => sum + entry.letter.weight, 0);
-          const loadPercent = Math.min(100, totalWeight / courier.capacity * 100);
+          const load = loads.get(courier.id) ?? {
+            letterCount: entries.length,
+            totalWeight: entries.reduce((sum, entry) => sum + entry.letter.weight, 0),
+            countOverBy: 0,
+            weightOverBy: 0,
+            overLimit: false
+          };
+          const countPercent = Math.min(100, load.letterCount / courier.maxLetters * 100);
+          const weightPercent = Math.min(100, load.totalWeight / courier.capacity * 100);
           const routeResult = preview?.routes?.find((route) => route.courierId === courier.id);
 
           return (
-            <article className="courier-card" key={courier.id}>
+            <article className={`courier-card${load.overLimit ? ' over-limit' : ''}`} key={courier.id}>
               <div className="courier-header">
                 <div className="courier-identity">
                   <span className="courier-mark" style={{ background: courier.color }}>{courier.callSign.slice(0, 1)}</span>
@@ -91,17 +102,32 @@ export default function FleetPanel({ game, assignments, preview, busy, onMove, o
                   </div>
                 </div>
                 <div className="courier-timing">
-                  <span>{entries.length}/{courier.maxLetters} 封</span>
+                  {load.overLimit && <span className="over-limit-flag">超限</span>}
                   <strong>{routeResult ? `${formatHour(routeResult.startHour)} → ${formatHour(routeResult.endHour)}` : '待命'}</strong>
                 </div>
               </div>
 
-              <div className="capacity-row">
-                <span>载重 {totalWeight.toFixed(1)} / {courier.capacity} kg</span>
-                <div className={`capacity-track ${loadPercent >= 100 ? 'full' : ''}`}>
-                  <i style={{ width: `${loadPercent}%`, background: courier.color }} />
+              <div className="capacity-rows">
+                <div className={`capacity-row${load.countOverBy > 0 ? ' over' : ''}`}>
+                  <span>封数</span>
+                  <div className="capacity-track">
+                    <i style={{ width: `${countPercent}%`, background: courier.color }} />
+                  </div>
+                  <div className="capacity-value">
+                    <b>{load.letterCount}/{courier.maxLetters} 封</b>
+                    {load.countOverBy > 0 && <em className="over-tag">超 {load.countOverBy} 封</em>}
+                  </div>
                 </div>
-                <b>{Math.round(loadPercent)}%</b>
+                <div className={`capacity-row${load.weightOverBy > 0 ? ' over' : ''}`}>
+                  <span>载重</span>
+                  <div className="capacity-track">
+                    <i style={{ width: `${weightPercent}%`, background: courier.color }} />
+                  </div>
+                  <div className="capacity-value">
+                    <b>{load.totalWeight.toFixed(1)}/{courier.capacity} kg</b>
+                    {load.weightOverBy > 0 && <em className="over-tag">超 {load.weightOverBy.toFixed(1)} kg</em>}
+                  </div>
+                </div>
               </div>
 
               <div className="route-letters">
