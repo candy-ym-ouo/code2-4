@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { gameApi } from './api.js';
+import { summarizeCourierLoad } from './utils.js';
 import FleetPanel from './components/FleetPanel.jsx';
 import LetterCard from './components/LetterCard.jsx';
 import MapPanel from './components/MapPanel.jsx';
@@ -80,6 +81,19 @@ function App() {
   const assignedIds = useMemo(() => new Set(assignments.map((assignment) => assignment.letterId)), [assignments]);
   const unassignedLetters = openLetters.filter((letter) => !assignedIds.has(letter.id));
 
+  // 调整后立即在本地复算封数 / 载重（与服务端同规则），不必等待预览往返；
+  // 服务端预览回来前先用它提示与拦截，服务端仍握有最终裁决权。
+  const localLoad = useMemo(
+    () => summarizeCourierLoad(game?.couriers || [], assignments, game?.letters || []),
+    [game, assignments]
+  );
+  const localIssues = localLoad.issues;
+
+  // 预览与当前方案匹配时以服务端裁决为准；防抖等待期或请求中则回退到本地复算。
+  const previewStale = !preview;
+  const visibleIssues = previewStale ? localIssues : preview.issues;
+  const planLocallyValid = localIssues.length === 0;
+
   function assignLetter(letter, courierId) {
     setAssignments((current) => {
       const courierOrders = current
@@ -128,7 +142,8 @@ function App() {
   }
 
   async function advanceDay() {
-    if (!preview?.valid) return;
+    // 界面不得放行非法方案：本地复算与服务端预览都通过才允许提交。
+    if (!planLocallyValid || !preview?.valid) return;
     setBusy(true);
     setError('');
     try {
@@ -268,12 +283,25 @@ function App() {
                 <LetterCard key={letter.id} letter={letter} islands={game.islands}>
                   {letter.status === 'backlog' && <span className="backlog-tag">已积压 {Math.max(0, game.day - letter.day)} 日</span>}
                   <div className="assign-buttons">
-                    {game.couriers.map((courier) => (
-                      <button key={courier.id} type="button" disabled={busy} onClick={() => assignLetter(letter, courier.id)}>
-                        <i style={{ background: courier.color }} />
-                        {courier.name}
-                      </button>
-                    ))}
+                    {game.couriers.map((courier) => {
+                      const load = localLoad.loads.find((item) => item.courierId === courier.id);
+                      return (
+                        <button
+                          key={courier.id}
+                          type="button"
+                          disabled={busy}
+                          className={load?.over ? 'courier-over' : ''}
+                          title={`封数 ${load?.letterCount ?? 0}/${courier.maxLetters} · 载重 ${(load?.totalWeight ?? 0).toFixed(1)}/${courier.capacity}kg`}
+                          onClick={() => assignLetter(letter, courier.id)}
+                        >
+                          <i style={{ background: courier.color }} />
+                          {courier.name}
+                          {load?.over && <em className="assign-overflow">
+                            {load.countOver ? `封数 ${load.letterCount}/${load.maxLetters}` : `超重 ${load.totalWeight}/${load.capacity}kg`}
+                          </em>}
+                        </button>
+                      );
+                    })}
                   </div>
                 </LetterCard>
               ))}
@@ -284,6 +312,9 @@ function App() {
             game={game}
             assignments={assignments}
             preview={preview}
+            loads={localLoad.loads}
+            issues={visibleIssues}
+            recalculating={previewStale && assignments.length > 0}
             busy={busy}
             onMove={moveLetter}
             onUnassign={unassignLetter}
@@ -322,11 +353,17 @@ function App() {
           <button
             type="button"
             className="dispatch-button"
-            disabled={busy || !preview?.valid}
+            disabled={busy || !planLocallyValid || !preview?.valid}
             onClick={advanceDay}
           >
             {busy ? '航线结算中...' : '执行当日调度'}
-            <span>{preview?.valid ? '所有航线检查通过' : '先修正调度方案'}</span>
+            <span>
+              {!planLocallyValid
+                ? '存在超限装载，请先调整'
+                : preview?.valid
+                  ? '所有航线检查通过'
+                  : '先修正调度方案'}
+            </span>
           </button>
         </div>
       </aside>
